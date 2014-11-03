@@ -46,18 +46,20 @@ const defaultDest = "index.html"
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: %v [flags] <url>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %v [flags] url...\n", os.Args[0])
 		flag.PrintDefaults()
 		os.Exit(2)
 	}
 	flag.Parse()
-	url := flag.Arg(0)
-	if url == "" {
+	args := flag.Args()
+	if len(args) == 0 {
 		flag.Usage()
 	}
-	if err := get(url); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+	for _, url := range args {
+		if err := get(url); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
 	}
 }
 
@@ -76,7 +78,7 @@ func get(source string) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("Total size: %v bytes", humanize.Comma(size))
+	log.Printf("Downloading %v (%v bytes)", dest, humanize.Comma(size))
 	if size == 0 {
 		log.Println("nothing to do!")
 		return nil
