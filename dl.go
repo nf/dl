@@ -102,12 +102,12 @@ func get(source string) error {
 	for i := 0; i < *concurrency; i++ {
 		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			for off := range offsets {
 				if err := getChunk(out, source, off, size, counts); err != nil {
 					errc <- err
 				}
 			}
+			wg.Done()
 		}()
 	}
 	go func() {
