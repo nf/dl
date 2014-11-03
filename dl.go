@@ -109,7 +109,7 @@ func get(source string) error {
 				for fail := 0; err != nil && fail < 3; fail++ {
 					err = getChunk(out, source, off, size, counts)
 					if err != nil {
-						log.Println("downloading chunk at:", off, "error:", err)
+						log.Println("downloading chunk at offset", off, "error:", err)
 					}
 				}
 				if err != nil {
@@ -124,27 +124,27 @@ func get(source string) error {
 	}()
 
 	var (
-		received  int64
+		count     int64
 		lastCount int64
-		lastPrint = time.Now()
+		ticker    = time.NewTicker(time.Second)
 	)
+	defer ticker.Stop()
 	for {
 		select {
 		case n, ok := <-counts:
-			received += int64(n)
-			if n := time.Now(); n.Sub(lastPrint) > time.Second || !ok {
-				log.Printf(
-					"%v/%v bytes received (%v/sec)",
-					humanize.Comma(received),
-					humanize.Comma(size),
-					humanize.Bytes(uint64(received-lastCount)),
-				)
-				lastPrint = n
-				lastCount = received
-			}
+			count += int64(n)
 			if !ok {
+				log.Printf("%v bytes received", humanize.Comma(count))
 				return out.Close()
 			}
+		case <-ticker.C:
+			log.Printf(
+				"%v/%v bytes received (%v/sec)",
+				humanize.Comma(count),
+				humanize.Comma(size),
+				humanize.Bytes(uint64(count-lastCount)),
+			)
+			lastCount = count
 		case err := <-errc:
 			out.Close()
 			return err
