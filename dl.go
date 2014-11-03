@@ -170,7 +170,7 @@ func getSize(url string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parseInt error: %v", err)
 	}
-	if h := res.Header.Get("Accept-Ranges"); h == "" || h == "none" {
+	if h := res.Header.Get("Accept-Ranges"); h != "bytes" {
 		return 0, errors.New("ranges not supported")
 	}
 	return size, nil
