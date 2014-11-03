@@ -101,14 +101,14 @@ func get(source string) error {
 	)
 	for i := 0; i < *concurrency; i++ {
 		wg.Add(1)
-		go func(n int) {
+		go func() {
 			defer wg.Done()
 			for off := range offsets {
 				if err := getChunk(out, source, off, size, counts); err != nil {
 					errc <- err
 				}
 			}
-		}(i)
+		}()
 	}
 	go func() {
 		wg.Wait()
