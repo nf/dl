@@ -19,6 +19,7 @@ limitations under the License.
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -104,7 +105,14 @@ func get(source string) error {
 		go func() {
 			defer wg.Done()
 			for off := range offsets {
-				if err := getChunk(out, source, off, size, counts); err != nil {
+				err := errors.New("sentinel")
+				for fail := 0; err != nil && fail < 3; fail++ {
+					err = getChunk(out, source, off, size, counts)
+					if err != nil {
+						log.Println("downloading chunk at:", off, "error:", err)
+					}
+				}
+				if err != nil {
 					errc <- err
 				}
 			}
