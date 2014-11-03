@@ -168,6 +168,7 @@ func getSize(url string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parseInt error: %v", err)
 	}
+	// TODO(adg): check that the Accept range header is present
 	return size, nil
 }
 
