@@ -135,9 +135,10 @@ func get(source string) error {
 				lastCount = received
 			}
 			if !ok {
-				return nil
+				return out.Close()
 			}
 		case err := <-errc:
+			out.Close()
 			return err
 		}
 	}
