@@ -17,12 +17,15 @@ limitations under the License.
 package main
 
 import (
+	"bytes"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -34,11 +37,12 @@ var (
 	username = flag.String("user", "", "basic auth username")
 	password = flag.String("pass", "", "basic auth password")
 	refresh  = flag.Duration("refresh", time.Minute, "refresh interval")
+	httpAddr = flag.String("http", "localhost:8080", "HTTP listen address")
 )
 
 func main() {
 	flag.Parse()
-	NewManager(
+	m := NewManager(
 		*baseURL,
 		*refresh,
 		func(r *http.Request) {
@@ -46,7 +50,16 @@ func main() {
 				r.SetBasicAuth(*username, *password)
 			}
 		},
-	).Run()
+	)
+	go m.Run()
+	http.Handle("/", m)
+	log.Fatal(http.ListenAndServe(*httpAddr, nil))
+}
+
+type File struct {
+	URL            string
+	Received, Size int64
+	State          State
 }
 
 type State int
@@ -55,12 +68,22 @@ const (
 	New State = iota
 	InFlight
 	Done
+	Error
 )
+
+func (s State) String() string {
+	return map[State]string{
+		New:      "New",
+		InFlight: "InFlight",
+		Done:     "Done",
+		Error:    "Error",
+	}[s]
+}
 
 func NewManager(baseURL string, refresh time.Duration, rp fetch.RequestPreparer) *Manager {
 	return &Manager{
 		base:    baseURL,
-		files:   make(map[string]State),
+		files:   make(map[string]*File),
 		refresh: refresh,
 		rp:      rp,
 	}
@@ -68,17 +91,35 @@ func NewManager(baseURL string, refresh time.Duration, rp fetch.RequestPreparer)
 
 type Manager struct {
 	base    string
-	files   map[string]State // keyed by remote URL
 	refresh time.Duration
 	rp      fetch.RequestPreparer
+
+	filesMu sync.RWMutex
+	files   map[string]*File // keyed by remote URL
+}
+
+func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var b bytes.Buffer
+	m.filesMu.RLock()
+	err := uiTemplate.Execute(&b, m.files)
+	m.filesMu.RUnlock()
+	if err != nil {
+		log.Println(err)
+	}
+	b.WriteTo(w)
+}
+
+type status struct {
+	url string
+	fetch.State
 }
 
 func (m *Manager) Run() {
 	if err := m.update(); err != nil {
 		log.Fatal("update:", err)
 	}
-	done := make(chan string)
-	fetching := m.fetchNext(done)
+	status := make(chan status)
+	fetching := m.fetchNext(status)
 
 	refresh := time.NewTicker(m.refresh)
 	defer refresh.Stop()
@@ -89,11 +130,32 @@ func (m *Manager) Run() {
 				log.Println("update:", err)
 			}
 			if !fetching {
-				fetching = m.fetchNext(done)
+				fetching = m.fetchNext(status)
 			}
-		case url := <-done:
-			m.files[url] = Done
-			fetching = m.fetchNext(done)
+		case s := <-status:
+			m.filesMu.Lock()
+			f, ok := m.files[s.url]
+			if !ok {
+				panic(fmt.Sprintf("got state for unknown url %q", s.url))
+			}
+			if f.State != InFlight {
+				panic(fmt.Sprintf("unexpected state %v for %v", s, f))
+			}
+			f.Received = s.Count
+			done := false
+			switch {
+			case s.Err != nil:
+				log.Println("fetching:", f.URL, "error:", s.Err)
+				f.State = Error
+				done = true
+			case s.Count == f.Size:
+				f.State = Done
+				done = true
+			}
+			m.filesMu.Unlock()
+			if done {
+				fetching = m.fetchNext(status)
+			}
 		}
 	}
 }
@@ -103,45 +165,53 @@ func (m *Manager) update() error {
 	if err != nil {
 		return err
 	}
+	m.filesMu.Lock()
 	for _, u := range urls {
 		if _, ok := m.files[u]; !ok {
-			m.files[u] = New
+			m.files[u] = &File{URL: u}
 		}
 	}
+	m.filesMu.Unlock()
 	return nil
 }
 
-func (m *Manager) fetchNext(done chan string) bool {
-	for url, state := range m.files {
-		if state == New {
-			m.files[url] = InFlight
-			go m.fetch(url, done)
+func (m *Manager) fetchNext(status chan<- status) bool {
+	m.filesMu.Lock()
+	defer m.filesMu.Unlock()
+	for _, f := range m.files {
+		if f.State == New {
+			log.Println("fetching:", f.URL)
+			m.filesMu.Unlock()
+			size, err := m.fetch(f.URL, status)
+			m.filesMu.Lock()
+			f.Size = size
+			if err != nil {
+				log.Println("fetching:", f.URL, "error:", err)
+				f.State = Error
+				continue
+			}
+			f.State = InFlight
 			return true
 		}
 	}
 	return false
 }
 
-func (m *Manager) fetch(url string, done chan string) {
-	log.Println("fetching:", url)
-	defer func() { done <- url }()
+func (m *Manager) fetch(url string, statusC chan<- status) (int64, error) {
 	dest := filepath.ToSlash(strings.TrimPrefix(url, m.base))
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-		log.Printf("%v: mkdir: %v", url, err)
-		return
+		return 0, err
 	}
-	_, state, err := fetch.Fetch(dest, url, m.rp)
-	if err == nil {
-		for s := range state {
-			if s.Err != nil {
-				err = s.Err
-				break
-			}
-		}
-	}
+	size, state, err := fetch.Fetch(dest, url, m.rp)
 	if err != nil {
-		log.Printf("fetching: %v: error: %v", url, err)
+		return size, err
 	}
+	go func() {
+		for s := range state {
+			statusC <- status{url, s}
+		}
+	}()
+	return size, nil
 }
 
 func (m *Manager) fileURLs(base string) ([]string, error) {
