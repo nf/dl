@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -43,6 +44,7 @@ var (
 	startHour = flag.Int("start", -1, "hour to automatically start downloads (-1 means never)")
 	stopHour  = flag.Int("stop", -1, "hour to automatically stop downloads (-1 means never)")
 	selector  = flag.String("selector", "a", "anchor tag goquery selector")
+	cache     = flag.String("cache", "cache.json", "state cache file")
 )
 
 func main() {
@@ -53,6 +55,7 @@ func main() {
 		*startHour,
 		*stopHour,
 		*selector,
+		*cache,
 		func(r *http.Request) {
 			if *username != "" || *password != "" {
 				r.SetBasicAuth(*username, *password)
@@ -115,14 +118,19 @@ func (s State) String() string {
 	}[s]
 }
 
-func NewManager(baseURL string, refresh time.Duration, startH, stopH int, selector string, rp fetch.RequestPreparer) *Manager {
+func NewManager(baseURL string, refresh time.Duration, startH, stopH int, selector, cache string, rp fetch.RequestPreparer) *Manager {
+	fs := make(map[string]*File)
+	if err := readCache(cache, &fs); err != nil {
+		log.Fatalf("error reading cache %q: %v", cache, err)
+	}
 	return &Manager{
 		base:     baseURL,
-		files:    make(map[string]*File),
+		files:    fs,
 		refresh:  refresh,
 		startH:   startH,
 		stopH:    stopH,
 		selector: selector,
+		cache:    cache,
 		rp:       rp,
 		start:    make(chan string),
 		hold:     make(chan string),
@@ -134,6 +142,7 @@ type Manager struct {
 	refresh       time.Duration
 	startH, stopH int
 	selector      string
+	cache         string
 	rp            fetch.RequestPreparer
 
 	filesMu sync.RWMutex
@@ -192,6 +201,7 @@ func (m *Manager) Run() {
 			if !fetching {
 				fetching = m.fetchNext(status)
 			}
+			m.writeCache()
 		case s := <-status:
 			m.filesMu.Lock()
 			f, ok := m.files[s.url]
@@ -217,15 +227,25 @@ func (m *Manager) Run() {
 			m.filesMu.Unlock()
 			if done {
 				fetching = m.fetchNext(status)
+				m.writeCache()
 			}
 		case u := <-m.start:
 			m.setState(u, StartNow, New, OnHold)
 			if !fetching {
 				fetching = m.fetchNext(status)
+				m.writeCache()
 			}
 		case u := <-m.hold:
 			m.setState(u, OnHold, New, StartNow)
 		}
+	}
+}
+
+func (m *Manager) writeCache() {
+	m.filesMu.RLock()
+	defer m.filesMu.RUnlock()
+	if err := writeCache(m.cache, m.files); err != nil {
+		log.Println("error writing cache:", err)
 	}
 }
 
@@ -365,4 +385,32 @@ func (m *Manager) get(url string) (*goquery.Document, error) {
 	}
 	defer res.Body.Close()
 	return goquery.NewDocumentFromReader(res.Body)
+}
+
+func readCache(filename string, state interface{}) error {
+	f, err := os.Open(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	return json.NewDecoder(f).Decode(state)
+}
+
+func writeCache(filename string, state interface{}) error {
+	tmp := filename + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+	if err := json.NewEncoder(f).Encode(state); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filename)
 }
