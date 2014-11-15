@@ -35,11 +35,14 @@ import (
 )
 
 var (
-	baseURL  = flag.String("base", "", "base URL to mirror")
-	username = flag.String("user", "", "basic auth username")
-	password = flag.String("pass", "", "basic auth password")
-	refresh  = flag.Duration("refresh", time.Minute, "refresh interval")
-	httpAddr = flag.String("http", "localhost:8080", "HTTP listen address")
+	baseURL   = flag.String("base", "", "base URL to mirror")
+	username  = flag.String("user", "", "basic auth username")
+	password  = flag.String("pass", "", "basic auth password")
+	refresh   = flag.Duration("refresh", time.Minute, "refresh interval")
+	httpAddr  = flag.String("http", "localhost:8080", "HTTP listen address")
+	startHour = flag.Int("start", -1, "hour to automatically start downloads (-1 means never)")
+	stopHour  = flag.Int("stop", -1, "hour to automatically stop downloads (-1 means never)")
+	selector  = flag.String("selector", "a", "anchor tag goquery selector")
 )
 
 func main() {
@@ -47,6 +50,9 @@ func main() {
 	m := NewManager(
 		*baseURL,
 		*refresh,
+		*startHour,
+		*stopHour,
+		*selector,
 		func(r *http.Request) {
 			if *username != "" || *password != "" {
 				r.SetBasicAuth(*username, *password)
@@ -83,6 +89,7 @@ type State int
 
 const (
 	New State = iota
+	OnHold
 	StartNow
 	InFlight
 	Done
@@ -92,6 +99,7 @@ const (
 func (s State) String() string {
 	return map[State]string{
 		New:      "New",
+		OnHold:   "Hold",
 		StartNow: "Starting",
 		InFlight: "Downloading",
 		Done:     "Done",
@@ -99,20 +107,25 @@ func (s State) String() string {
 	}[s]
 }
 
-func NewManager(baseURL string, refresh time.Duration, rp fetch.RequestPreparer) *Manager {
+func NewManager(baseURL string, refresh time.Duration, startH, stopH int, selector string, rp fetch.RequestPreparer) *Manager {
 	return &Manager{
-		base:    baseURL,
-		files:   make(map[string]*File),
-		refresh: refresh,
-		rp:      rp,
-		start:   make(chan string),
+		base:     baseURL,
+		files:    make(map[string]*File),
+		refresh:  refresh,
+		startH:   startH,
+		stopH:    stopH,
+		selector: selector,
+		rp:       rp,
+		start:    make(chan string),
 	}
 }
 
 type Manager struct {
-	base    string
-	refresh time.Duration
-	rp      fetch.RequestPreparer
+	base          string
+	refresh       time.Duration
+	startH, stopH int
+	selector      string
+	rp            fetch.RequestPreparer
 
 	filesMu sync.RWMutex
 	files   map[string]*File // keyed by remote URL
@@ -155,6 +168,12 @@ func (m *Manager) Run() {
 		case <-refresh.C:
 			if err := m.update(); err != nil {
 				log.Println("update:", err)
+			}
+			switch time.Now().Hour() {
+			case m.startH:
+				m.changeState(New, StartNow)
+			case m.stopH:
+				m.changeState(StartNow, New)
 			}
 			if !fetching {
 				fetching = m.fetchNext(status)
@@ -217,11 +236,21 @@ func (m *Manager) update() error {
 	return nil
 }
 
+func (m *Manager) changeState(from, to State) {
+	m.filesMu.Lock()
+	defer m.filesMu.Unlock()
+	for _, f := range m.files {
+		if f.State == from {
+			f.State = to
+		}
+	}
+}
+
 func (m *Manager) fetchNext(status chan<- status) bool {
 	m.filesMu.Lock()
 	defer m.filesMu.Unlock()
 	for _, f := range m.files {
-		if f.State == StartNow || f.State == New && m.canStart() {
+		if f.State == StartNow {
 			log.Println("fetching:", f.URL)
 			m.filesMu.Unlock()
 			size, err := m.fetch(f.URL, status)
@@ -236,11 +265,6 @@ func (m *Manager) fetchNext(status chan<- status) bool {
 			return true
 		}
 	}
-	return false
-}
-
-func (m *Manager) canStart() bool {
-	// TODO(adg): implement auto-start at 2am
 	return false
 }
 
@@ -287,7 +311,7 @@ func (m *Manager) ls(url string) ([]string, error) {
 		return nil, err
 	}
 	var files []string
-	index.Find("td > a").Each(func(_ int, v *goquery.Selection) {
+	index.Find(m.selector).Each(func(_ int, v *goquery.Selection) {
 		href, _ := v.Attr("href")
 		if href == "../" {
 			return
