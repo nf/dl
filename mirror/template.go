@@ -33,19 +33,29 @@ table {
 {{range .}}
 <tr>
 	<td>
-	{{if .State}}
-		&nbsp;
-	{{else}}
+	{{if .CanStart}}
 		<form method="POST" action="/">
 		<input type="hidden" name="start" value="{{.URL}}">
-		<input type="submit" value="Start Now">
+		<input type="submit" value="Start">
 		</form>
+	{{else}}
+		&nbsp;
+	{{end}}
+	</td>
+	<td>
+	{{if .CanHold}}
+		<form method="POST" action="/">
+		<input type="hidden" name="hold" value="{{.URL}}">
+		<input type="submit" value="Hold">
+		</form>
+	{{else}}
+		&nbsp;
 	{{end}}
 	</td>
 	<td><div class="progress"><div class="complete" style="width: {{.PercentDone}}%"></div></div></td>
-	<td>{{.Name}}</td>
-	<td>{{.Size}}</td>
+	<td>{{with .Size}}{{.}}{{else}}&nbsp;{{end}}</td>
 	<td>{{.State}}</td>
+	<td>{{.Name}}</td>
 </tr>
 {{end}}
 </table>

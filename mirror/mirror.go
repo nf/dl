@@ -85,6 +85,14 @@ func (f *File) PercentDone() int {
 	return int(float64(f.Received) / float64(f.Size) * 100)
 }
 
+func (f *File) CanStart() bool {
+	return f.State == New || f.State == OnHold
+}
+
+func (f *File) CanHold() bool {
+	return f.State == New || f.State == StartNow
+}
+
 type State int
 
 const (
@@ -117,6 +125,7 @@ func NewManager(baseURL string, refresh time.Duration, startH, stopH int, select
 		selector: selector,
 		rp:       rp,
 		start:    make(chan string),
+		hold:     make(chan string),
 	}
 }
 
@@ -130,12 +139,17 @@ type Manager struct {
 	filesMu sync.RWMutex
 	files   map[string]*File // keyed by remote URL
 
-	start chan string
+	start, hold chan string
 }
 
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s := r.FormValue("start"); r.Method == "POST" && s != "" {
 		m.start <- s
+		http.Redirect(w, r, "", http.StatusFound)
+		return
+	}
+	if h := r.FormValue("hold"); r.Method == "POST" && h != "" {
+		m.hold <- h
 		http.Redirect(w, r, "", http.StatusFound)
 		return
 	}
@@ -205,18 +219,12 @@ func (m *Manager) Run() {
 				fetching = m.fetchNext(status)
 			}
 		case u := <-m.start:
-			m.filesMu.Lock()
-			f, ok := m.files[u]
-			if !ok {
-				log.Printf("start of unknown url %q", u)
-				m.filesMu.Unlock()
-				break
-			}
-			f.State = StartNow
-			m.filesMu.Unlock()
+			m.setState(u, StartNow, New, OnHold)
 			if !fetching {
 				fetching = m.fetchNext(status)
 			}
+		case u := <-m.hold:
+			m.setState(u, OnHold, New, StartNow)
 		}
 	}
 }
@@ -244,6 +252,28 @@ func (m *Manager) changeState(from, to State) {
 			f.State = to
 		}
 	}
+}
+
+func (m *Manager) setState(u string, s State, from ...State) {
+	m.filesMu.Lock()
+	defer m.filesMu.Unlock()
+	f, ok := m.files[u]
+	if !ok {
+		log.Printf("setState of unknown url %q", u)
+		return
+	}
+	okFromState := false
+	for _, fs := range from {
+		if f.State == fs {
+			okFromState = true
+			break
+		}
+	}
+	if !okFromState {
+		log.Printf("setState of %q to %v from invalid state %v; ignoring", u, s, f.State)
+		return
+	}
+	f.State = s
 }
 
 func (m *Manager) fetchNext(status chan<- status) bool {
