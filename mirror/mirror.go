@@ -448,7 +448,12 @@ func writeCache(filename string, state interface{}) error {
 		return err
 	}
 	defer os.Remove(tmp)
-	if err := json.NewEncoder(f).Encode(state); err != nil {
+	defer f.Close()
+	b, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
 		return err
 	}
 	if err := f.Close(); err != nil {
