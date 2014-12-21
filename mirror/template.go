@@ -57,9 +57,9 @@ table {
 		&nbsp;
 	{{end}}
 	</td>
-	<td>{{with .Size}}{{.}}{{else}}&nbsp;{{end}}</td>
-	<td><div class="progress"><div class="complete" style="width: {{.PercentDone}}%"></div></div></td>
 	<td>{{.State}}</td>
+	<td><div class="progress"><div class="complete" style="width: {{.PercentDone}}%"></div></div></td>
+	<td>{{with .Size}}{{.}}{{else}}&nbsp;{{end}}</td>
 	<td>{{.Name}}</td>
 </tr>
 {{end}}
