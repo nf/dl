@@ -27,6 +27,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,7 @@ var (
 	stopHour  = flag.Int("stop", -1, "hour to automatically stop downloads (-1 means never)")
 	selector  = flag.String("selector", "a", "anchor tag goquery selector")
 	cache     = flag.String("cache", "cache.json", "state cache file")
+	hideAfter = flag.Duration("hide", 7*24*time.Hour, "hide done torrents after this time")
 )
 
 func main() {
@@ -71,6 +73,7 @@ type File struct {
 	URL            string
 	Received, Size int64
 	State          State
+	DoneAt         time.Time
 }
 
 func (f *File) Name() string {
@@ -90,6 +93,10 @@ func (f *File) PercentDone() int {
 
 func (f *File) CanStart() bool {
 	return f.State == New || f.State == OnHold
+}
+
+func (f *File) CanQueue() bool {
+	return f.State == OnHold || f.State == StartNow
 }
 
 func (f *File) CanHold() bool {
@@ -134,6 +141,7 @@ func NewManager(baseURL string, refresh time.Duration, startH, stopH int, select
 		rp:       rp,
 		start:    make(chan string),
 		hold:     make(chan string),
+		queue:    make(chan string),
 	}
 }
 
@@ -148,28 +156,59 @@ type Manager struct {
 	filesMu sync.RWMutex
 	files   map[string]*File // keyed by remote URL
 
-	start, hold chan string
+	start, hold, queue chan string
 }
 
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if s := r.FormValue("start"); r.Method == "POST" && s != "" {
-		m.start <- s
-		http.Redirect(w, r, "", http.StatusFound)
+	if r.Method == "POST" {
+		if s := r.FormValue("start"); s != "" {
+			m.start <- s
+			http.Redirect(w, r, "", http.StatusFound)
+			return
+		}
+		if h := r.FormValue("hold"); h != "" {
+			m.hold <- h
+			http.Redirect(w, r, "", http.StatusFound)
+			return
+		}
+		if q := r.FormValue("queue"); q != "" {
+			m.queue <- q
+			http.Redirect(w, r, "", http.StatusFound)
+			return
+		}
+		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	if h := r.FormValue("hold"); r.Method == "POST" && h != "" {
-		m.hold <- h
-		http.Redirect(w, r, "", http.StatusFound)
-		return
-	}
-	var b bytes.Buffer
+
+	var fs fileList
 	m.filesMu.RLock()
-	err := uiTemplate.Execute(&b, m.files)
+	for _, f := range m.files {
+		if f.State == Done && time.Since(f.DoneAt) > *hideAfter {
+			continue
+		}
+		fs = append(fs, f)
+	}
 	m.filesMu.RUnlock()
+	sort.Sort(fs)
+
+	var b bytes.Buffer
+	err := uiTemplate.Execute(&b, fs)
 	if err != nil {
 		log.Println(err)
+		return
 	}
 	b.WriteTo(w)
+}
+
+type fileList []*File
+
+func (s fileList) Len() int      { return len(s) }
+func (s fileList) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
+func (s fileList) Less(i, j int) bool {
+	if s[i].State == s[j].State {
+		return s[i].URL < s[j].URL
+	}
+	return s[i].State < s[j].State
 }
 
 type status struct {
@@ -220,6 +259,7 @@ func (m *Manager) Run() {
 				done = true
 			case s.Count == f.Size:
 				if f.State != Done {
+					f.DoneAt = time.Now()
 					f.State = Done
 					done = true
 				}
@@ -237,6 +277,8 @@ func (m *Manager) Run() {
 			}
 		case u := <-m.hold:
 			m.setState(u, OnHold, New, StartNow)
+		case u := <-m.queue:
+			m.setState(u, New, OnHold, StartNow)
 		}
 	}
 }

@@ -43,7 +43,12 @@ table {
 	{{end}}
 	</td>
 	<td>
-	{{if .CanHold}}
+	{{if .CanQueue}}
+		<form method="POST" action="/">
+		<input type="hidden" name="queue" value="{{.URL}}">
+		<input type="submit" value="Queue">
+		</form>
+	{{else if .CanHold}}
 		<form method="POST" action="/">
 		<input type="hidden" name="hold" value="{{.URL}}">
 		<input type="submit" value="Hold">
@@ -52,8 +57,8 @@ table {
 		&nbsp;
 	{{end}}
 	</td>
-	<td><div class="progress"><div class="complete" style="width: {{.PercentDone}}%"></div></div></td>
 	<td>{{with .Size}}{{.}}{{else}}&nbsp;{{end}}</td>
+	<td><div class="progress"><div class="complete" style="width: {{.PercentDone}}%"></div></div></td>
 	<td>{{.State}}</td>
 	<td>{{.Name}}</td>
 </tr>
