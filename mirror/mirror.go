@@ -130,6 +130,13 @@ func NewManager(baseURL string, refresh time.Duration, startH, stopH int, select
 	if err := readCache(cache, &fs); err != nil {
 		log.Fatalf("error reading cache %q: %v", cache, err)
 	}
+	// Reset files that were InFlight to New;
+	// the fetch code will take care of resuming them.
+	for _, f := range fs {
+		if f.State == InFlight {
+			f.State = New
+		}
+	}
 	return &Manager{
 		base:     baseURL,
 		files:    fs,
