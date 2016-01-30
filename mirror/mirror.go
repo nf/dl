@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -77,11 +76,11 @@ type File struct {
 }
 
 func (f *File) Name() string {
-	u, err := url.Parse(f.URL)
-	if err != nil {
-		return f.URL
+	p := strings.TrimPrefix(f.URL, *baseURL)
+	if s, err := url.QueryUnescape(p); err == nil {
+		return s
 	}
-	return path.Base(u.Path)
+	return p
 }
 
 func (f *File) PercentDone() int {
@@ -367,12 +366,16 @@ func (m *Manager) fetchNext(status chan<- status) bool {
 	return false
 }
 
-func (m *Manager) fetch(url string, statusC chan<- status) (int64, error) {
-	dest := filepath.ToSlash(strings.TrimPrefix(url, m.base))
+func (m *Manager) fetch(url_ string, statusC chan<- status) (int64, error) {
+	dest := strings.TrimPrefix(url_, m.base)
+	if s, err := url.QueryUnescape(dest); err == nil {
+		dest = s
+	}
+	dest = filepath.ToSlash(dest)
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 		return 0, err
 	}
-	state, err := fetch.Fetch(dest, url, &fetch.Options{RequestPreparer: m.rp})
+	state, err := fetch.Fetch(dest, url_, &fetch.Options{RequestPreparer: m.rp})
 	if err != nil {
 		return 0, err
 	}
@@ -380,7 +383,7 @@ func (m *Manager) fetch(url string, statusC chan<- status) (int64, error) {
 	size := s.Size
 	go func() {
 		for s := range state {
-			statusC <- status{url, s}
+			statusC <- status{url_, s}
 		}
 	}()
 	return size, nil
