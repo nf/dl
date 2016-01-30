@@ -19,7 +19,6 @@ limitations under the License.
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -77,27 +76,14 @@ func get(source string) error {
 		},
 	}
 
-	var state <-chan fetch.State
-	if initState, errState := getState(dest); errState == nil {
-		state, err = fetch.Resume(dest, source, opts, initState)
-	} else if os.IsNotExist(errState) {
-		state, err = fetch.Fetch(dest, source, opts)
-	} else {
-		return errState
-	}
+	state, err := fetch.Fetch(dest, source, opts)
 	if err != nil {
 		return err
-	}
-	if state == nil {
-		return nil
 	}
 
 	for s := range state {
 		if s.Error != nil {
 			return s.Error
-		}
-		if err := putState(dest, s); err != nil {
-			log.Println("Error writing state file: %v", err)
 		}
 		log.Printf("%v/%v bytes received (%v/%v chunks, %v inflight)",
 			humanize.Comma(s.Downloaded),
@@ -107,32 +93,4 @@ func get(source string) error {
 		)
 	}
 	return nil
-}
-
-func getState(dest string) (state fetch.State, err error) {
-	f, err := os.Open(dest + ".dlstate")
-	if err != nil {
-		return fetch.State{}, err
-	}
-	defer f.Close()
-	err = json.NewDecoder(f).Decode(&state)
-	return
-}
-
-func putState(dest string, state fetch.State) error {
-	tmp := dest + ".dlstate.temp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return err
-	}
-	if err := json.NewEncoder(f).Encode(&state); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, dest+".dlstate")
 }

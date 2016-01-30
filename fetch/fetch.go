@@ -17,9 +17,11 @@ limitations under the License.
 package fetch
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -75,7 +77,84 @@ type Block struct {
 	Offset, Length int64
 }
 
-func Fetch(dest, source string, opts *Options) (s <-chan State, err error) {
+// Fetch downloads the source URL to the dest file.
+// If dest and dest.dlstate both exist, it will attempt to resume the download.
+// It will maintain a dest.dlstate file to track the parts of the file
+// that have been downloaded.
+func Fetch(dest, source string, opts *Options) (<-chan State, error) {
+	var (
+		state <-chan State
+		err   error
+	)
+	if initState, errState := getState(dest); errState == nil {
+		state, err = Resume(dest, source, opts, initState)
+	} else if os.IsNotExist(errState) {
+		if exists(dest) {
+			return nil, errors.New("cannot clobber existing file")
+		}
+		state, err = Get(dest, source, opts)
+	} else {
+		return nil, errState
+	}
+	if err != nil || state == nil {
+		return nil, err
+	}
+	out := make(chan State)
+	go func() {
+		defer close(out)
+		var err error
+		for s := range state {
+			if s.Error == nil {
+				if err := putState(dest, s); err != nil {
+					log.Println("Error writing state file: %v", err)
+				}
+			} else {
+				err = s.Error
+			}
+			out <- s
+		}
+		if err == nil {
+			os.Remove(dest + ".dlstate")
+		}
+	}()
+	return out, nil
+}
+
+func getState(dest string) (state State, err error) {
+	f, err := os.Open(dest + ".dlstate")
+	if err != nil {
+		return State{}, err
+	}
+	defer f.Close()
+	err = json.NewDecoder(f).Decode(&state)
+	return
+}
+
+func putState(dest string, state State) error {
+	tmp := dest + ".dlstate.temp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(f).Encode(&state); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, dest+".dlstate")
+}
+
+func exists(filename string) bool {
+	_, err := os.Stat(filename)
+	return !os.IsNotExist(err)
+}
+
+// Get downloads a fresh copy of the source URL and stores it in dest.
+func Get(dest, source string, opts *Options) (s <-chan State, err error) {
 	var o Options
 	if opts != nil {
 		o = *opts
