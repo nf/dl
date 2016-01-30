@@ -92,7 +92,7 @@ func (f *File) PercentDone() int {
 }
 
 func (f *File) CanStart() bool {
-	return f.State == New || f.State == OnHold
+	return f.State == New || f.State == OnHold || f.State == Error
 }
 
 func (f *File) CanQueue() bool {
@@ -270,7 +270,7 @@ func (m *Manager) Run() {
 				m.writeCache()
 			}
 		case u := <-m.start:
-			m.setState(u, StartNow, New, OnHold)
+			m.setState(u, StartNow, New, OnHold, Error)
 			if !fetching {
 				fetching = m.fetchNext(status)
 				m.writeCache()
