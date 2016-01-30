@@ -250,14 +250,14 @@ func (m *Manager) Run() {
 			if f.State != InFlight && f.State != Done {
 				panic(fmt.Sprintf("unexpected state %v for %v", s, f))
 			}
-			f.Received = s.Count
+			f.Received = s.Downloaded
 			done := false
 			switch {
-			case s.Err != nil:
-				log.Println("fetching:", f.URL, "error:", s.Err)
+			case s.Error != nil:
+				log.Println("fetching:", f.URL, "error:", s.Error)
 				f.State = Error
 				done = true
-			case s.Count == f.Size:
+			case s.Downloaded == f.Size:
 				if f.State != Done {
 					f.DoneAt = time.Now()
 					f.State = Done
@@ -365,10 +365,12 @@ func (m *Manager) fetch(url string, statusC chan<- status) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 		return 0, err
 	}
-	size, state, err := fetch.Fetch(dest, url, m.rp)
+	state, err := fetch.Fetch(dest, url, &fetch.Options{RequestPreparer: m.rp})
 	if err != nil {
-		return size, err
+		return 0, err
 	}
+	s := <-state
+	size := s.Size
 	go func() {
 		for s := range state {
 			statusC <- status{url, s}
