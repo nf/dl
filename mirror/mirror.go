@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -49,6 +50,9 @@ var (
 )
 
 func main() {
+	// Turn off HTTP/2 in Go 1.6+.
+	http.DefaultTransport.(*http.Transport).TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
+
 	flag.Parse()
 	m := NewManager(
 		*baseURL,
@@ -375,7 +379,10 @@ func (m *Manager) fetch(url_ string, statusC chan<- status) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 		return 0, err
 	}
-	state, err := fetch.Fetch(dest, url_, &fetch.Options{RequestPreparer: m.rp})
+	state, err := fetch.Fetch(dest, url_, &fetch.Options{
+		BlockSize:       1 << 20, // (1MB)
+		RequestPreparer: m.rp,
+	})
 	if err != nil {
 		return 0, err
 	}
