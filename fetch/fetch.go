@@ -40,7 +40,7 @@ type Options struct {
 	// BlockSize is the size of each chunk.
 	BlockSize int64
 
-	// ErrorThreshold is the number of HTTP errors to tolerate.
+	// ErrorThreshold is the number of consecutive HTTP errors to tolerate.
 	ErrorThreshold int
 
 	RequestPreparer RequestPreparer
@@ -277,6 +277,7 @@ func (o *Options) fetch(out file, source string, size int64, pending, complete [
 					}
 				}()
 			case b := <-successCh:
+				failures = 0
 				delete(inflight, b)
 				downloaded += b.Length
 				complete = append(complete, b)
