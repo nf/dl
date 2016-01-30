@@ -344,6 +344,7 @@ func (o *Options) getBlock(w io.WriterAt, url string, b Block, size int64) error
 		return fmt.Errorf("roundtrip error: %v", err)
 	}
 	if res.StatusCode != http.StatusPartialContent {
+		res.Body.Close()
 		return fmt.Errorf("bad status: %v", res.Status)
 	}
 	wr := fmt.Sprintf("bytes %v-%v/%v", b.Offset, end, size)
