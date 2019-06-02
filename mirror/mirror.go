@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -37,38 +38,70 @@ import (
 )
 
 var (
-	baseURL   = flag.String("base", "", "base URL to mirror")
-	username  = flag.String("user", "", "basic auth username")
-	password  = flag.String("pass", "", "basic auth password")
-	refresh   = flag.Duration("refresh", time.Minute, "refresh interval")
-	httpAddr  = flag.String("http", "localhost:8080", "HTTP listen address")
-	startHour = flag.Int("start", -1, "hour to automatically start downloads (-1 means never)")
-	stopHour  = flag.Int("stop", -1, "hour to automatically stop downloads (-1 means never)")
-	selector  = flag.String("selector", "a", "anchor tag goquery selector")
-	cache     = flag.String("cache", "cache.json", "state cache file")
-	hideAfter = flag.Duration("hide", 7*24*time.Hour, "hide done torrents after this time")
+	refresh    = flag.Duration("refresh", time.Minute, "refresh interval")
+	hideAfter  = flag.Duration("hide", 7*24*time.Hour, "hide done files after this time")
+	httpAddr   = flag.String("http", "localhost:8080", "HTTP listen address")
+	cacheFile  = flag.String("cache", "cache.json", "state cache file")
+	configFile = flag.String("config", "", "config file name")
 )
 
-func main() {
-	// Turn off HTTP/2 in Go 1.6+.
-	http.DefaultTransport.(*http.Transport).TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
+type config struct {
+	// BaseURL from which to scrape file names.
+	BaseURL string
 
+	// Anchor tag goquery selector.
+	Selector string
+
+	// HTTP Basic authentication.
+	Username string
+	Password string
+
+	// Hour at which to start/stop downloads.
+	Start, Stop *int
+}
+
+func main() {
 	flag.Parse()
+
+	if *configFile == "" {
+		log.Fatal("must supply -config")
+	}
+	cfgB, err := ioutil.ReadFile(*configFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var cfg config
+	if err := json.Unmarshal(cfgB, &cfg); err != nil {
+		log.Fatalf("error reading config file: %v", err)
+	}
+	baseURL = cfg.BaseURL // TODO: ew, gross.
+
+	start, stop := -1, -1
+	if cfg.Start != nil {
+		start = *cfg.Start
+	}
+	if cfg.Stop != nil {
+		stop = *cfg.Stop
+	}
+
 	m := NewManager(
-		*baseURL,
+		cfg.BaseURL,
 		*refresh,
-		*startHour,
-		*stopHour,
-		*selector,
-		*cache,
+		start, stop,
+		cfg.Selector,
+		*cacheFile,
 		func(r *http.Request) {
-			if *username != "" || *password != "" {
-				r.SetBasicAuth(*username, *password)
+			if cfg.Username != "" || cfg.Password != "" {
+				r.SetBasicAuth(cfg.Username, cfg.Password)
 			}
 		},
 	)
 	go m.Run()
 	http.Handle("/", m)
+
+	// Turn off HTTP/2 in Go 1.6+.
+	http.DefaultTransport.(*http.Transport).TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
+
 	log.Fatal(http.ListenAndServe(*httpAddr, nil))
 }
 
@@ -79,8 +112,10 @@ type File struct {
 	DoneAt         time.Time
 }
 
+var baseURL string // TODO: fix this yuckiness.
+
 func (f *File) Name() string {
-	p := strings.TrimPrefix(f.URL, *baseURL)
+	p := strings.TrimPrefix(f.URL, baseURL)
 	if s, err := url.QueryUnescape(p); err == nil {
 		return s
 	}
