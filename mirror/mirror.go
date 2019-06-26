@@ -262,8 +262,10 @@ type status struct {
 }
 
 func (m *Manager) Run() {
-	if err := m.update(); err != nil {
+	if changed, err := m.update(); err != nil {
 		log.Fatal("update:", err)
+	} else if changed {
+		m.writeCache()
 	}
 	status := make(chan status)
 	fetching := m.fetchNext(status)
@@ -273,19 +275,23 @@ func (m *Manager) Run() {
 	for {
 		select {
 		case <-refresh.C:
-			if err := m.update(); err != nil {
+			changed, err := m.update()
+			if err != nil {
 				log.Println("update:", err)
 			}
 			switch time.Now().Hour() {
 			case m.startH:
-				m.changeState(New, StartNow)
+				changed = m.changeState(New, StartNow) || changed
 			case m.stopH:
-				m.changeState(StartNow, New)
+				changed = m.changeState(StartNow, New) || changed
 			}
 			if !fetching {
 				fetching = m.fetchNext(status)
+				changed = fetching || changed
 			}
-			m.writeCache()
+			if changed {
+				m.writeCache()
+			}
 		case s := <-status:
 			m.filesMu.Lock()
 			f, ok := m.files[s.url]
@@ -336,29 +342,32 @@ func (m *Manager) writeCache() {
 	}
 }
 
-func (m *Manager) update() error {
+func (m *Manager) update() (changed bool, err error) {
 	urls, err := m.fileURLs(m.base)
 	if err != nil {
-		return err
+		return false, err
 	}
 	m.filesMu.Lock()
 	for _, u := range urls {
 		if _, ok := m.files[u]; !ok {
+			changed = true
 			m.files[u] = &File{URL: u}
 		}
 	}
 	m.filesMu.Unlock()
-	return nil
+	return changed, nil
 }
 
-func (m *Manager) changeState(from, to State) {
+func (m *Manager) changeState(from, to State) (changed bool) {
 	m.filesMu.Lock()
 	defer m.filesMu.Unlock()
 	for _, f := range m.files {
 		if f.State == from {
+			changed = true
 			f.State = to
 		}
 	}
+	return changed
 }
 
 func (m *Manager) setState(u string, s State, from ...State) {
